@@ -185,6 +185,9 @@ function run_group_2 {
 }
 
 function run_group_3 {
+    # DEBUG ONLY (FLINK-41696): run only the RocksDB memory diagnostics
+    run_test "RocksDB memory diagnostics" "$END_TO_END_DIR/test-scripts/test_rocksdb_memory_diag.sh"
+    return
     ################################################################################
     # Miscellaneous
     ################################################################################
