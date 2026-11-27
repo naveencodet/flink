@@ -121,7 +121,8 @@ public class RocksDBMemoryControllerUtils {
     @VisibleForTesting
     static WriteBufferManager createWriteBufferManager(
             long writeBufferManagerCapacity, Cache cache) {
-        return new WriteBufferManager(writeBufferManagerCapacity, cache);
+        // DEBUG ONLY (FLINK-41696): stall writes when memtable memory reaches the limit
+        return new WriteBufferManager(writeBufferManagerCapacity, cache, true);
     }
 
     /**

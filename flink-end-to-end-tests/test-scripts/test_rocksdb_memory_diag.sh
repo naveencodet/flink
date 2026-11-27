@@ -132,14 +132,16 @@ for iter in $(seq 1 "$ITERATIONS"); do
     --sequence_generator_source.sleep_after_elements 1 | grep "Job has been submitted with JobID" | sed 's/.* //g')
 
   wait_job_running "$JOB_ID"
+  run_start=$(date +%s)
   wait_oper_metric_num_in_records TumblingWindowOperator.0 10000 'RocksDB test job'
+  run_seconds=$(( $(date +%s) - run_start ))
   cancel_job "$JOB_ID"
   stop_cluster
 
   summarize_iteration | tee "$iter_dir/summary.txt"
   peaks=$(awk 'NR > 1 { if ($3 > m[$2]) m[$2] = $3; if ($6 > t[$2]) t[$2] = $6; if ($7 > q[$2]) q[$2] = $7 }
     END { printf "slot0=%.1fMB slot1=%.1fMB maxMemtables=%.1f/%.1fMB maxImmutable=%d/%d", m[0], m[1], t[0], t[1], q[0], q[1] }' "$iter_dir/summary.txt")
-  echo "RESULT iteration=$iter $peaks" | tee -a "$OUT_DIR/results.txt"
+  echo "RESULT iteration=$iter time10k=${run_seconds}s $peaks" | tee -a "$OUT_DIR/results.txt"
 
   mkdir -p "$iter_dir/flink-logs"
   mv "$FLINK_LOG_DIR"/* "$iter_dir/flink-logs/" 2>/dev/null
