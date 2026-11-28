@@ -140,6 +140,23 @@ class RescaleTimelineITCase extends RescaleTimelineITCaseBase {
                 });
     }
 
+    // DIAGNOSTIC (FLINK-40789): also appends to $TIMING_FILE so the CI job can upload it.
+    private static synchronized void diag(String line) {
+        System.out.println(line);
+        final String file = System.getenv("TIMING_FILE");
+        if (file != null) {
+            try {
+                java.nio.file.Files.write(
+                        java.nio.file.Paths.get(file),
+                        (line + System.lineSeparator()).getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        java.nio.file.StandardOpenOption.CREATE,
+                        java.nio.file.StandardOpenOption.APPEND);
+            } catch (java.io.IOException ignored) {
+                // diagnostics only
+            }
+        }
+    }
+
     @TestTemplate
     void testRecordRescaleForNewAvailableResource() throws Exception {
         final MiniCluster miniCluster = miniClusterResource.getMiniCluster();
@@ -162,7 +179,7 @@ class RescaleTimelineITCase extends RescaleTimelineITCaseBase {
                                                     .getNumberRegisteredSlots();
                                     if (slots != lastSlots) {
                                         lastSlots = slots;
-                                        System.out.println(
+                                        diag(
                                                 "TIMING registeredSlots="
                                                         + slots
                                                         + " atMs="
@@ -182,7 +199,7 @@ class RescaleTimelineITCase extends RescaleTimelineITCaseBase {
                                                         .getParallelism();
                                         if (par != lastParallelism) {
                                             lastParallelism = par;
-                                            System.out.println(
+                                            diag(
                                                     "TIMING jobParallelism="
                                                             + par
                                                             + " atMs="
@@ -204,7 +221,7 @@ class RescaleTimelineITCase extends RescaleTimelineITCaseBase {
 
         waitForVertexParallelismReachedAndJobRunning(jobGraph, JOB_VERTEX_ID, PARALLELISM);
         final long t1 = System.nanoTime();
-        System.out.println(
+        diag(
                 "TIMING initialScheduleMs="
                         + (t1 - t0) / 1_000_000
                         + " atMs="
@@ -219,13 +236,13 @@ class RescaleTimelineITCase extends RescaleTimelineITCaseBase {
             Thread.sleep(5);
         }
         final long t3 = System.nanoTime();
-        System.out.println("TIMING thirdTmSlotsRegisteredMs=" + (t3 - t2) / 1_000_000);
+        diag("TIMING thirdTmSlotsRegisteredMs=" + (t3 - t2) / 1_000_000);
 
         waitForVertexParallelismReachedAndJobRunning(
                 jobGraph,
                 JOB_VERTEX_ID,
                 NUMBER_SLOTS_PER_TASK_MANAGER * (NUMBER_TASK_MANAGERS + 1));
-        System.out.println("TIMING upscaleDoneMs=" + (System.nanoTime() - t2) / 1_000_000);
+        diag("TIMING upscaleDoneMs=" + (System.nanoTime() - t2) / 1_000_000);
         poller.interrupt();
 
         OnceBlockingNoOpInvokable.unblock();

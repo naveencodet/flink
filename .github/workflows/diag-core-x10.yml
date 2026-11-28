@@ -1,0 +1,124 @@
+# Throwaway diagnostic workflow for FLINK-40789 (fork only, do not upstream).
+# Compiles once, then runs the CI "core" test stage 10 times in parallel jobs, each with a
+# CPU/memory/disk sampler and the TIMING lines from RescaleTimelineITCase.
+name: "Diag core stage x10"
+on:
+  push:
+    branches: [FLINK-40789-rescale-diagnostics]
+    paths: ['.github/workflows/diag-core-x10.yml']
+permissions: read-all
+env:
+  FLINK_ARTIFACT_DIR: /root/artifact-directory
+  FLINK_ARTIFACT_FILENAME: flink_artifacts.tar.gz
+  MOUNTED_WORKING_DIR: /__w/flink/flink
+  CONTAINER_LOCAL_WORKING_DIR: /root/flink
+  MAVEN_REPO_FOLDER: /root/.m2/repository
+  MAVEN_ARGS: -Dmaven.repo.local=/root/.m2/repository
+  ENVIRONMENT: 'PROFILE="-Dinclude_hadoop_aws -Djdk17 -Pjava17-target"'
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    container:
+      image: apache/flink-ci-docker:java_8_11_17_21_25_maven_386_3916_noble
+      options: --init --privileged
+    env:
+      GHA_JOB_TIMEOUT: 240
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: job-init
+        uses: "./.github/actions/job_init"
+        with:
+          jdk_version: 17
+          maven_repo_folder: ${{ env.MAVEN_REPO_FOLDER }}
+          source_directory: ${{ env.MOUNTED_WORKING_DIR }}
+          target_directory: ${{ env.CONTAINER_LOCAL_WORKING_DIR }}
+      - name: "Compile Flink"
+        uses: "./.github/actions/run_mvn"
+        timeout-minutes: 240
+        with:
+          working_directory: ${{ env.CONTAINER_LOCAL_WORKING_DIR }}
+          maven-parameters: "-T 1C test-compile -Dflink.markBundledAsOptional=false -Dfast"
+          env: ${{ env.ENVIRONMENT }}
+      - name: "Collect build artifacts"
+        working-directory: ${{ env.CONTAINER_LOCAL_WORKING_DIR }}
+        run: ./tools/ci/create_build_artifact.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-artifacts-diag-${{ github.run_number }}
+          path: ${{ env.FLINK_ARTIFACT_DIR }}/${{ env.FLINK_ARTIFACT_FILENAME }}
+          if-no-files-found: error
+          retention-days: 1
+  core:
+    name: "core run ${{ matrix.run }}"
+    needs: compile
+    runs-on: ubuntu-24.04
+    container:
+      image: apache/flink-ci-docker:java_8_11_17_21_25_maven_386_3916_noble
+      options: --init --privileged
+      volumes:
+        - /mnt:/root
+    env:
+      GHA_JOB_TIMEOUT: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            .mvn
+            .scalafmt.conf
+            tools
+      - id: job-init
+        uses: "./.github/actions/job_init"
+        with:
+          jdk_version: 17
+          maven_repo_folder: ${{ env.MAVEN_REPO_FOLDER }}
+          source_directory: ${{ env.MOUNTED_WORKING_DIR }}
+          target_directory: ${{ env.CONTAINER_LOCAL_WORKING_DIR }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: build-artifacts-diag-${{ github.run_number }}
+          path: ${{ env.FLINK_ARTIFACT_DIR }}
+      - name: "Unpack build artifact"
+        working-directory: ${{ env.CONTAINER_LOCAL_WORKING_DIR }}
+        run: ./tools/ci/unpack_build_artifact.sh
+      - name: "Create non-root user"
+        run: |
+          useradd -m -u 1001 flink
+          echo "flink ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          mkdir -p ${{ env.CONTAINER_LOCAL_WORKING_DIR }} ${{ env.MAVEN_REPO_FOLDER }}
+          chown -R flink:flink ${{ env.CONTAINER_LOCAL_WORKING_DIR }} ${{ env.MAVEN_REPO_FOLDER }}
+      - name: "Instance details and sampler"
+        run: |
+          mkdir -p /root/diag
+          { echo "== nproc"; nproc; echo "== lscpu"; lscpu; echo "== free -m"; free -m; echo "== df -h"; df -h; echo "== uname"; uname -a; } | tee /root/diag/instance.txt
+          nohup ${{ env.CONTAINER_LOCAL_WORKING_DIR }}/.github/diag/sample.sh /root/diag/resources.csv /root > /dev/null 2>&1 &
+          echo started
+      - name: "Test - core"
+        id: test-run
+        continue-on-error: true
+        working-directory: ${{ env.CONTAINER_LOCAL_WORKING_DIR }}
+        timeout-minutes: 240
+        run: |
+          touch /root/diag/timing.log && chown flink:flink /root/diag/timing.log
+          runuser -u flink -- bash -c 'export TIMING_FILE=/root/diag/timing.log; ${{ env.ENVIRONMENT }} PROFILE="$PROFILE -Pgithub-actions" ./tools/ci/uploading_watchdog.sh ./tools/ci/test_controller.sh core'
+      - name: "Collect results"
+        if: always()
+        working-directory: ${{ env.CONTAINER_LOCAL_WORKING_DIR }}
+        run: |
+          pkill -f sample.sh || true
+          echo "core exit: ${{ steps.test-run.outcome }}" > /root/diag/outcome.txt
+          mkdir -p /root/diag/reports
+          cp flink-runtime/target/surefire-reports/*RescaleTimelineITCase* /root/diag/reports/ 2>/dev/null || true
+          { echo "### run ${{ matrix.run }}: core ${{ steps.test-run.outcome }}"; echo '```'; cat /root/diag/timing.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: diag-core-run-${{ matrix.run }}
+          path: /root/diag/
