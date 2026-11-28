@@ -148,11 +148,58 @@ class RescaleTimelineITCase extends RescaleTimelineITCaseBase {
 
         // DIAGNOSTIC (FLINK-40789): timings and slot counts, parsed by the CI workflow.
         final long t0 = System.nanoTime();
-        System.out.println(
-                "TIMING registeredSlotsAtSubmit="
-                        + miniCluster.getResourceOverview().get().getNumberRegisteredSlots()
-                        + " freeSlotsAtSubmit="
-                        + miniCluster.getResourceOverview().get().getNumberFreeSlots());
+        final Thread poller =
+                new Thread(
+                        () -> {
+                            int lastSlots = -1;
+                            int lastParallelism = -1;
+                            while (!Thread.currentThread().isInterrupted()) {
+                                try {
+                                    final int slots =
+                                            miniCluster
+                                                    .getResourceOverview()
+                                                    .get()
+                                                    .getNumberRegisteredSlots();
+                                    if (slots != lastSlots) {
+                                        lastSlots = slots;
+                                        System.out.println(
+                                                "TIMING registeredSlots="
+                                                        + slots
+                                                        + " atMs="
+                                                        + (System.nanoTime() - t0) / 1_000_000);
+                                    }
+                                    final Object vertex =
+                                            miniCluster
+                                                    .getArchivedExecutionGraph(jobGraph.getJobID())
+                                                    .get()
+                                                    .getAllVertices()
+                                                    .get(JOB_VERTEX_ID);
+                                    if (vertex != null) {
+                                        final int par =
+                                                ((org.apache.flink.runtime.executiongraph
+                                                                        .AccessExecutionJobVertex)
+                                                                vertex)
+                                                        .getParallelism();
+                                        if (par != lastParallelism) {
+                                            lastParallelism = par;
+                                            System.out.println(
+                                                    "TIMING jobParallelism="
+                                                            + par
+                                                            + " atMs="
+                                                            + (System.nanoTime() - t0)
+                                                                    / 1_000_000);
+                                        }
+                                    }
+                                    Thread.sleep(1);
+                                } catch (InterruptedException e) {
+                                    return;
+                                } catch (Exception ignored) {
+                                    // job not yet known to the cluster
+                                }
+                            }
+                        });
+        poller.setDaemon(true);
+        poller.start();
         miniCluster.submitJob(jobGraph).join();
 
         waitForVertexParallelismReachedAndJobRunning(jobGraph, JOB_VERTEX_ID, PARALLELISM);
@@ -160,8 +207,8 @@ class RescaleTimelineITCase extends RescaleTimelineITCaseBase {
         System.out.println(
                 "TIMING initialScheduleMs="
                         + (t1 - t0) / 1_000_000
-                        + " registeredSlots="
-                        + miniCluster.getResourceOverview().get().getNumberRegisteredSlots());
+                        + " atMs="
+                        + (t1 - t0) / 1_000_000);
 
         miniCluster.startTaskManager();
         final long t2 = System.nanoTime();
@@ -179,6 +226,7 @@ class RescaleTimelineITCase extends RescaleTimelineITCaseBase {
                 JOB_VERTEX_ID,
                 NUMBER_SLOTS_PER_TASK_MANAGER * (NUMBER_TASK_MANAGERS + 1));
         System.out.println("TIMING upscaleDoneMs=" + (System.nanoTime() - t2) / 1_000_000);
+        poller.interrupt();
 
         OnceBlockingNoOpInvokable.unblock();
 
