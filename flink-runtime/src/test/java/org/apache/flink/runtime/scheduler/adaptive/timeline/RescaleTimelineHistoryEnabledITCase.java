@@ -98,17 +98,65 @@ class RescaleTimelineHistoryEnabledITCase extends RescaleTimelineITCaseBase {
 
         waitForVertexParallelismReachedAndJobRunning(jobGraph, JOB_VERTEX_ID, PARALLELISM);
 
+        // DIAGNOSTIC: elapsed time since the job entered RUNNING (cooldown is 100 ms).
+        final long runningTs =
+                miniCluster
+                        .getArchivedExecutionGraph(jobGraph.getJobID())
+                        .get()
+                        .getStatusTimestamp(org.apache.flink.api.common.JobStatus.RUNNING);
+        final long seenMs = System.currentTimeMillis() - runningTs;
+
         updateJobResourceRequirements(miniCluster, jobGraph, 1, PARALLELISM * 2);
+        final long updatedMs = System.currentTimeMillis() - runningTs;
 
         miniCluster.cancelJob(jobGraph.getJobID());
+        final long cancelCalledMs = System.currentTimeMillis() - runningTs;
 
-        waitUntilConditionWithTimeout(
-                () -> {
-                    List<Rescale> rescaleHistory = getRescaleHistory(miniCluster, jobGraph);
-                    return hasRescaleHistoryMetCondition(
-                            rescaleHistory, 2, TerminatedReason.JOB_CANCELED);
-                },
-                10000);
+        try {
+            waitUntilConditionWithTimeout(
+                    () -> {
+                        List<Rescale> rescaleHistory = getRescaleHistory(miniCluster, jobGraph);
+                        return hasRescaleHistoryMetCondition(
+                                rescaleHistory, 2, TerminatedReason.JOB_CANCELED);
+                    },
+                    10000);
+            diag(
+                    "CANCELTIMING result=PASS runningToSeenMs="
+                            + seenMs
+                            + " runningToUpdatedMs="
+                            + updatedMs
+                            + " runningToCancelCalledMs="
+                            + cancelCalledMs);
+        } catch (Exception e) {
+            diag(
+                    "CANCELTIMING result=FAIL runningToSeenMs="
+                            + seenMs
+                            + " runningToUpdatedMs="
+                            + updatedMs
+                            + " runningToCancelCalledMs="
+                            + cancelCalledMs
+                            + " history="
+                            + getRescaleHistory(miniCluster, jobGraph));
+            throw e;
+        }
+    }
+
+    // DIAGNOSTIC: also appends to $TIMING_FILE so the CI job can upload it.
+    private static synchronized void diag(String line) {
+        System.out.println(line);
+        final String file = System.getenv("TIMING_FILE");
+        if (file != null) {
+            try {
+                java.nio.file.Files.write(
+                        java.nio.file.Paths.get(file),
+                        (line + System.lineSeparator())
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        java.nio.file.StandardOpenOption.CREATE,
+                        java.nio.file.StandardOpenOption.APPEND);
+            } catch (java.io.IOException ignored) {
+                // diagnostics only
+            }
+        }
     }
 
     @Test
