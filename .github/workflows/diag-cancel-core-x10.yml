@@ -98,8 +98,9 @@ jobs:
         run: |
           mkdir -p /root/diag
           { echo "== nproc"; nproc; echo "== lscpu"; lscpu; echo "== free -m"; free -m; echo "== df -h"; df -h; echo "== uname"; uname -a; } | tee /root/diag/instance.txt
-          RUNNER_TRACKING_ID="" setsid nohup ${{ env.CONTAINER_LOCAL_WORKING_DIR }}/.github/diag/sample.sh /root/diag/resources.csv /root > /dev/null 2>&1 < /dev/null &
-          sleep 3; wc -l /root/diag/resources.csv
+          ls -la "${{ github.workspace }}/.github/diag/" || true
+          RUNNER_TRACKING_ID="" setsid nohup bash "${{ github.workspace }}/.github/diag/sample.sh" /root/diag/resources.csv /root > /root/diag/sampler.log 2>&1 < /dev/null &
+          sleep 3; wc -l /root/diag/resources.csv || cat /root/diag/sampler.log || true
           echo started
       - name: "Test - core"
         id: test-run
