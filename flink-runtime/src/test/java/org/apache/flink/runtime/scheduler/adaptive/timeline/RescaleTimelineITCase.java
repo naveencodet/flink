@@ -338,9 +338,19 @@ class RescaleTimelineITCase extends RescaleTimelineITCaseBase {
 
         waitForVertexParallelismReachedAndJobRunning(jobGraph, JOB_VERTEX_ID, PARALLELISM);
 
+        // DIAGNOSTIC (merge test): elapsed ms since the job entered RUNNING (cooldown 100 ms).
+        final long runningTs =
+                miniCluster
+                        .getArchivedExecutionGraph(jobGraph.getJobID())
+                        .get()
+                        .getStatusTimestamp(org.apache.flink.api.common.JobStatus.RUNNING);
+        final long seenMs = System.currentTimeMillis() - runningTs;
+
         updateJobResourceRequirements(miniCluster, jobGraph, 1, PARALLELISM * 2);
+        final long updatedMs = System.currentTimeMillis() - runningTs;
 
         miniCluster.terminateTaskManager(0);
+        final long terminatedMs = System.currentTimeMillis() - runningTs;
 
         // Wait for the failover to complete before snapshotting: the merge that re-stamps the
         // trigger cause to RECOVERABLE_FAILOVER runs before the job is RUNNING again at the
@@ -350,16 +360,57 @@ class RescaleTimelineITCase extends RescaleTimelineITCaseBase {
 
         final ExecutionGraphInfo executionGraphInfo =
                 miniCluster.getExecutionGraphInfo(jobGraph.getJobID()).join();
-        runAdaptedParameterizedAssertion(
-                executionGraphInfo,
-                () -> {
-                    assertThat(executionGraphInfo.getRescalesStatsSnapshot()).isNotNull();
-                    List<Rescale> rescaleHistory =
-                            executionGraphInfo.getRescalesStatsSnapshot().getRescaleHistory();
-                    assertThat(rescaleHistory).hasSize(2);
-                    assertThat(rescaleHistory.get(0).getTriggerCause())
-                            .isEqualTo(TriggerCause.RECOVERABLE_FAILOVER);
-                });
+        final String timings =
+                " runningToSeenMs="
+                        + seenMs
+                        + " runningToUpdatedMs="
+                        + updatedMs
+                        + " runningToTerminateTmMs="
+                        + terminatedMs;
+        try {
+            runAdaptedParameterizedAssertion(
+                    executionGraphInfo,
+                    () -> {
+                        assertThat(executionGraphInfo.getRescalesStatsSnapshot()).isNotNull();
+                        List<Rescale> rescaleHistory =
+                                executionGraphInfo.getRescalesStatsSnapshot().getRescaleHistory();
+                        assertThat(rescaleHistory).hasSize(2);
+                        assertThat(rescaleHistory.get(0).getTriggerCause())
+                                .isEqualTo(TriggerCause.RECOVERABLE_FAILOVER);
+                    });
+            mergeDiag("MERGETIMING result=PASS" + timings);
+        } catch (Throwable t) {
+            final StringBuilder reasons = new StringBuilder();
+            if (executionGraphInfo.getRescalesStatsSnapshot() != null) {
+                for (Rescale r :
+                        executionGraphInfo.getRescalesStatsSnapshot().getRescaleHistory()) {
+                    reasons.append(r.getTriggerCause())
+                            .append('/')
+                            .append(r.getTerminatedReason())
+                            .append(';');
+                }
+            }
+            mergeDiag("MERGETIMING result=FAIL" + timings + " history=" + reasons);
+            throw t;
+        }
+    }
+
+    // DIAGNOSTIC: also appends to $TIMING_FILE so the CI job can upload it.
+    private static synchronized void mergeDiag(String line) {
+        System.out.println(line);
+        final String file = System.getenv("TIMING_FILE");
+        if (file != null) {
+            try {
+                java.nio.file.Files.write(
+                        java.nio.file.Paths.get(file),
+                        (line + System.lineSeparator())
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        java.nio.file.StandardOpenOption.CREATE,
+                        java.nio.file.StandardOpenOption.APPEND);
+            } catch (java.io.IOException ignored) {
+                // diagnostics only
+            }
+        }
     }
 
     @TestTemplate

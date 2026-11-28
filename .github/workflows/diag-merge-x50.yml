@@ -1,0 +1,56 @@
+# Throwaway diagnostic workflow (fork only, do not upstream).
+# Runs RescaleTimelineITCase#testRecordNonTerminatedRescaleMergingWithNewRecoverableFailureTriggerCause
+# 10 jobs x 5 sequential repetitions = 50 runs, logging MERGETIMING lines and runner details.
+name: "Diag merge test x50"
+on:
+  push:
+    branches: [diag-merge-test-x50]
+    paths: ['.github/workflows/diag-merge-x50.yml']
+permissions: read-all
+jobs:
+  repeat:
+    name: "job ${{ matrix.job }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+      - name: Instance details and sampler
+        run: |
+          mkdir -p diag
+          { echo "== nproc"; nproc; echo "== lscpu"; lscpu; echo "== free -m"; free -m; echo "== df -h"; df -h; echo "== uname"; uname -a;
+            echo "== azure vmSize"; curl -s --max-time 3 -H Metadata:true "http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01&format=text" || echo unavailable; echo; } | tee diag/instance.txt
+          RUNNER_TRACKING_ID="" setsid nohup bash .github/diag/sample.sh diag/resources.csv / > diag/sampler.log 2>&1 < /dev/null &
+          sleep 3; wc -l diag/resources.csv || cat diag/sampler.log
+      - name: Build flink-runtime
+        run: ./mvnw -B install -DskipTests -Dfast -Pskip-webui-build -Djdk17 -Pjava17-target -pl flink-runtime -am -T1C
+      - name: Run test 5 times
+        run: |
+          export TIMING_FILE="$PWD/diag/timing.log"
+          : > diag/results.txt
+          for i in 1 2 3 4 5; do
+            if ./mvnw -B -pl flink-runtime -Djdk17 -Pjava17-target -Dtest='RescaleTimelineITCase#testRecordNonTerminatedRescaleMergingWithNewRecoverableFailureTriggerCause' -DfailIfNoTests=false -Dcheckstyle.skip -Drat.skip -Dspotless.check.skip=true test > diag/run-$i.log 2>&1; then
+              echo "rep $i PASS" >> diag/results.txt
+            else
+              echo "rep $i FAIL" >> diag/results.txt
+            fi
+          done
+          cat diag/results.txt
+      - name: Summary
+        if: always()
+        run: |
+          pkill -f sample.sh || true
+          { echo "### job ${{ matrix.job }}"; cat diag/results.txt; echo '```'; cat diag/timing.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-merge-job-${{ matrix.job }}
+          path: diag/
